@@ -1,0 +1,25 @@
+//Konfigurasi di micro-step 1
+//arus 0.5 A
+
+#define directionPin 2
+#define stepPin 3
+#define stepsPerRevolution 200
+
+void setup() {
+  // put your setup code here, to run once:
+  pinMode(directionPin, OUTPUT);
+  pinMode(stepPin, OUTPUT);
+  delay(200);
+  for (int i = 0; i < stepsPerRevolution; i++) {
+    digitalWrite(directionPin, HIGH);
+    digitalWrite(stepPin, HIGH);
+    delay(2);
+    digitalWrite(stepPin, LOW);
+    delay(2);
+  }
+}
+void loop() {
+  // put your main code here, to run repeatedly:
+  
+
+}
