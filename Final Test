@@ -1,0 +1,196 @@
+#include <SPI.h>
+#include <Ethernet.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <avr/wdt.h>
+
+// ================= LCD =================
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// ================= SENSOR PIN =================
+const int trigPin[4] = {32, 36, 40, 44};
+const int echoPin[4] = {30, 34, 38, 42};
+
+// ================= RELAY PIN (AKTIF LOW) =================
+const int relayPin[6] = {31, 33, 35, 37, 39, 41};
+
+// ================= ETHERNET =================
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+IPAddress ip(192, 168, 1, 111);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress dns(8, 8, 8, 8);
+IPAddress subnet(255, 255, 0, 0);
+
+const int CS_ETH = 10;
+EthernetClient client;
+
+// ================= VARIABEL =================
+float distance[4];
+bool ethernetOK = false;
+unsigned long lastEthCheck = 0;
+unsigned long errorStartTime = 0;
+
+const unsigned long ethInterval = 3000;
+const unsigned long watchdogLimit = 10000;
+const float DIST_LIMIT = 35.0;
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);
+
+  // Watchdog
+  wdt_disable();
+  wdt_enable(WDTO_8S);
+
+  // Sensor
+  for (int i = 0; i < 4; i++) {
+    pinMode(trigPin[i], OUTPUT);
+    pinMode(echoPin[i], INPUT);
+  }
+
+  // Relay (FAIL SAFE OFF)
+  for (int i = 0; i < 6; i++) {
+    pinMode(relayPin[i], OUTPUT);
+    digitalWrite(relayPin[i], HIGH);
+  }
+
+  // LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("System Init");
+
+  // Ethernet
+  Ethernet.init(CS_ETH);
+  Ethernet.begin(mac, ip, dns, gateway, subnet);
+  delay(1000);
+
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    lcd.clear();
+    lcd.print("No Ethernet");
+    while (true);
+  }
+
+  showEthernetInfo();
+}
+
+// ================= LOOP =================
+void loop() {
+  wdt_reset();
+
+  readUltrasonic();
+  checkEthernet();
+  controlRelay();
+  updateLCD();
+}
+
+// ================= ULTRASONIC =================
+void readUltrasonic() {
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(trigPin[i], LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin[i], HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin[i], LOW);
+
+    long duration = pulseIn(echoPin[i], HIGH, 30000);
+    if (duration == 0)
+      distance[i] = 999;
+    else
+      distance[i] = duration * 0.034 / 2;
+  }
+
+  Serial.println("=== JARAK SENSOR ===");
+  for (int i = 0; i < 4; i++) {
+    Serial.print("S");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.print(distance[i]);
+    Serial.println(" cm");
+  }
+}
+
+// ================= RELAY CONTROL =================
+void controlRelay() {
+  bool objectDetected = false;
+
+  for (int i = 0; i < 4; i++) {
+    if (distance[i] < DIST_LIMIT) {
+      objectDetected = true;
+      break;
+    }
+  }
+
+  if (ethernetOK && objectDetected) {
+    // Relay ON
+    for (int i = 0; i < 6; i++) {
+      digitalWrite(relayPin[i], LOW);
+    }
+  } else {
+    // Relay OFF (fail-safe)
+    for (int i = 0; i < 6; i++) {
+      digitalWrite(relayPin[i], HIGH);
+    }
+  }
+}
+
+// ================= ETHERNET =================
+void showEthernetInfo() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ETH READY");
+  lcd.setCursor(0, 1);
+  lcd.print(Ethernet.localIP());
+
+  Serial.print("IP: ");
+  Serial.println(Ethernet.localIP());
+
+  ethernetOK = true;
+  errorStartTime = 0;
+}
+
+bool pingGateway() {
+  if (client.connect(gateway, 80)) {
+    client.stop();
+    return true;
+  }
+  client.stop();
+  return false;
+}
+
+void checkEthernet() {
+  if (millis() - lastEthCheck < ethInterval) return;
+  lastEthCheck = millis();
+
+  if (Ethernet.linkStatus() == LinkOFF || !pingGateway()) {
+    ethernetOK = false;
+
+    lcd.setCursor(0, 3);
+    lcd.print("ETH ERROR       ");
+
+    if (errorStartTime == 0) errorStartTime = millis();
+    if (millis() - errorStartTime >= watchdogLimit) {
+      lcd.clear();
+      lcd.print("WDT RESET");
+      while (true);
+    }
+    return;
+  }
+
+  ethernetOK = true;
+  errorStartTime = 0;
+}
+
+// ================= LCD UPDATE =================
+void updateLCD() {
+  for (int i = 0; i < 4; i++) {
+    lcd.setCursor(0, i);
+    lcd.print("S");
+    lcd.print(i + 1);
+    lcd.print(":");
+    lcd.print(distance[i]);
+    lcd.print("cm    ");
+  }
+}
