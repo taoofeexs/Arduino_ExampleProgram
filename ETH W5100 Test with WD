@@ -1,0 +1,160 @@
+#include <SPI.h>
+#include <Ethernet.h>
+#include <LiquidCrystal_I2C.h>
+#include <avr/wdt.h>
+
+// =====================
+// LCD
+// =====================
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// =====================
+// Ethernet Config
+// =====================
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+
+IPAddress ip(192, 168, 1, 111);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress dns(8, 8, 8, 8);
+IPAddress subnet(255, 255, 0, 0);
+
+const int CS_ETH = 10;
+EthernetClient client;
+
+// =====================
+bool ethernetReady = false;
+unsigned long lastCheck = 0;
+unsigned long errorStartTime = 0;
+const unsigned long interval = 3000;
+const unsigned long watchdogLimit = 10000; // 10 detik
+
+// =====================
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);
+
+  // ===== WATCHDOG =====
+  wdt_disable();          // Pastikan mati dulu
+  wdt_enable(WDTO_8S);    // Watchdog 8 detik
+
+  lcd.init();
+  lcd.backlight();
+  lcd.print("Init Ethernet");
+
+  Serial.println("Arduino Mega 2560");
+  Serial.println("Ethernet Init...");
+
+  Ethernet.init(CS_ETH);
+  Ethernet.begin(mac, ip, dns, gateway, subnet);
+  delay(1000);
+
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    lcd.clear();
+    lcd.print("No Ethernet");
+    Serial.println("Ethernet NOT FOUND");
+    while (true); // watchdog akan reset
+  }
+
+  showEthernetInfo();
+}
+
+// =====================
+void loop() {
+  wdt_reset(); // feed watchdog
+
+  if (millis() - lastCheck >= interval) {
+    lastCheck = millis();
+    checkEthernet();
+  }
+}
+
+// =====================
+void showEthernetInfo() {
+  Serial.println("Ethernet READY");
+  Serial.print("IP : ");
+  Serial.println(Ethernet.localIP());
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ethernet READY");
+  lcd.setCursor(0, 1);
+  lcd.print(Ethernet.localIP());
+
+  ethernetReady = true;
+  errorStartTime = 0; // reset error timer
+}
+
+// =====================
+bool pingGateway() {
+  if (client.connect(gateway, 80)) {
+    client.stop();
+    return true;
+  }
+  client.stop();
+  return false;
+}
+
+// =====================
+void triggerWatchdogIfNeeded() {
+  if (errorStartTime == 0) {
+    errorStartTime = millis();
+  }
+
+  if (millis() - errorStartTime >= watchdogLimit) {
+    Serial.println("WATCHDOG RESET TRIGGERED!");
+    lcd.clear();
+    lcd.print("WDT RESET!");
+    while (true); // sengaja hang → watchdog reset
+  }
+}
+
+// =====================
+void checkEthernet() {
+
+  // ===== Kabel LAN =====
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("RTO - Cable Lost");
+    lcd.clear();
+    lcd.print("RTO !!!");
+    lcd.setCursor(0, 1);
+    lcd.print("Cable Lost");
+    ethernetReady = false;
+    triggerWatchdogIfNeeded();
+    return;
+  }
+
+  // ===== Ping Gateway =====
+  bool gatewayOK = pingGateway();
+
+  if (!gatewayOK) {
+    if (Ethernet.localIP() != IPAddress(0, 0, 0, 0)) {
+      Serial.println("IP CONFLICT!");
+      lcd.clear();
+      lcd.print("IP CONFLICT!");
+      lcd.setCursor(0, 1);
+      lcd.print(Ethernet.localIP());
+    } else {
+      Serial.println("Gateway RTO");
+      lcd.clear();
+      lcd.print("Gateway RTO");
+    }
+
+    ethernetReady = false;
+    triggerWatchdogIfNeeded();
+    return;
+  }
+
+  // ===== Normal =====
+  errorStartTime = 0; // clear error timer
+
+  if (!ethernetReady) {
+    Serial.println("Ethernet Reconnected");
+    showEthernetInfo();
+  } else {
+    Serial.println("Ethernet OK");
+    lcd.clear();
+    lcd.print("Ethernet OK");
+    lcd.setCursor(0, 1);
+    lcd.print(Ethernet.localIP());
+  }
+}
